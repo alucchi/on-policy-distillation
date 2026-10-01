@@ -1,0 +1,7 @@
+torch==2.11.0
+transformers==5.5.4
+datasets>=3.2,<5
+numpy>=1.26
+tqdm>=4.66
+wandb>=0.19,<1
+vllm==0.20.0
