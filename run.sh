@@ -18,7 +18,7 @@ generate_if_missing() {
         return 1
     else
         "$EVAL_PYTHON" generate.py --model "$model" --output "$destination" \
-            --limit "${LIMIT:-0}" --samples "${SAMPLES:-1}" \
+            --limit "${LIMIT:-0}" --samples "${SAMPLES:-16}" \
             --max-new-tokens "${EVAL_TOKENS:-32768}"
     fi
 }

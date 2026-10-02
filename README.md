@@ -84,8 +84,8 @@ engine resources. Select evaluation GPUs with `CUDA_VISIBLE_DEVICES` instead of
 
 
 Defaults: 100 optimizer steps, eight math and eight code rollouts per step, learning
-rate `2e-6`, up to 4,096 generated training tokens, and one evaluation answer per
-problem with up to 32,768 generated tokens. With 4,096 tokens nearly every AIME
+rate `2e-6`, up to 4,096 generated training tokens, and 16 evaluation answers per
+problem (`SAMPLES`) with up to 32,768 generated tokens. With 4,096 tokens nearly every AIME
 answer is truncated before `</think>`, so even the teachers score ~0%. Training skips prompts longer than
 2,048 tokens rather than truncating the problem. These are pilot settings, not a
 claim of convergence or improved benchmark performance.
@@ -191,8 +191,8 @@ numbers in the answer.
 
 Scores are fractions in `scores.json`: AIME answer accuracy and LiveCodeBench
 pass@1, averaged over samples, not “any sample passed.” `--limit` selects a seeded
-subset and `--samples` controls repetitions. The default is one sample; short
-outputs and small subsets are useful for smoke checks but produce noisy scores.
+subset and `--samples` controls repetitions. `run.sh` uses 16 samples (`SAMPLES`);
+`generate.py` on its own defaults to one. Short outputs, single samples and small subsets are useful for smoke checks but produce noisy scores.
 `hit_token_limit_fraction` reports how often generation stopped without EOS.
 
 Math uses temperature 0.6, code 1.0, both with top-p 0.95. The published
@@ -202,26 +202,59 @@ comparable. Increase token limits and sample counts for more reliable evaluation
 
 ## Results
 
-Output of `bash run.sh` with the default settings (100 steps, 8 math + 8 code
-rollouts per step, lr `2e-6`, 4,096 training tokens; evaluation with one sample per
-problem, up to 32,768 generated tokens, seed 42). Scores are from
-`outputs/*/scores.json`.
+The student was trained with `bash run.sh` defaults (100 steps, 8 math + 8 code
+rollouts per step, lr `2e-6`, 4,096 training tokens). All four models were then
+evaluated with 16 samples per problem, up to 32,768 generated tokens and seed 42. The
+AIME24 and LiveCodeBench columns can be reproduced with the code in this repository:
 
-| Model | AIME24 pass@1 | LCB v5 pass@1 | AIME24 hit token limit | LCB v5 hit token limit |
+```bash
+python generate.py --model <model> --output outputs_samples16/<name> --samples 16
+python score.py --input outputs_samples16/<name>
+```
+
+The AIME25 column came from a modified `generate.py` / `score.py` that also loads the
+`eval_aime25` prompts from `BytedTsinghua-SIA/Open-MOPD-Data` and scores them like
+AIME24. That code is not part of this repository.
+
+Scores are the mean correctness over all 16 samples (avg@16). Brackets give 95%
+bootstrap intervals over problems; with only 30 problems per AIME set, the AIME
+intervals are wide.
+
+| Model | AIME24 | AIME25 | AIME24+25 (60) | LCB v5 |
 |---|---:|---:|---:|---:|
-| MixSFT (student init) | 16.7% (5/30) | 15.0% (25/167) | 6.7% | 0.0% |
-| RL-Math (math teacher) | 20.0% (6/30) | 16.8% (28/167) | 10.0% | 0.6% |
-| RL-Code (code teacher) | 23.3% (7/30) | 21.0% (35/167) | 13.3% | 1.2% |
-| **Distilled student** | **20.0% (6/30)** | **19.8% (33/167)** | 20.0% | 0.6% |
+| MixSFT (student init) | 16.0 | 20.2 | 18.1 [11.4, 25.6] | 15.7 [11.5, 20.0] |
+| RL-Math (math teacher) | 23.5 | 26.7 | **25.1** [16.6, 34.2] | 18.0 [13.5, 22.7] |
+| RL-Code (code teacher) | 20.6 | 21.9 | 21.2 [13.9, 29.4] | **23.5** [18.2, 28.9] |
+| **Distilled student** | 24.6 | 25.6 | **25.1** [16.6, 34.2] | 22.5 [17.3, 27.8] |
 
-The distilled student improves on its MixSFT initialization on both benchmarks
-(+1 AIME problem, +8 LiveCodeBench problems), reaching the math teacher on AIME24 and
-coming within two problems of the code teacher on LiveCodeBench. During training the
-exact reverse KL to the teachers dropped from 0.014 (math) / 0.051 (code), averaged over
-the first 10 steps, to 0.003 / 0.004 over the last 10. Most training rollouts still hit
-the 4,096-token limit at the end of training.
+Paired differences in points, comparing models on the same problems (bold: the 95%
+interval excludes zero):
 
-With a single sample per problem these differences are small: one AIME problem is
-3.3 points, and one LiveCodeBench problem is 0.6 points. In particular, RL-Code
-scoring above RL-Math on AIME24 is within this noise. Use `SAMPLES` > 1 for firmer
-conclusions.
+| Comparison | AIME24+25 | LCB v5 |
+|---|---:|---:|
+| RL-Math − RL-Code | **+3.9** [+0.8, +7.2] | **−5.5** [−8.5, −2.7] |
+| Distilled − MixSFT | **+7.0** [+3.9, +10.6] | **+6.8** [+3.6, +10.3] |
+| Distilled − RL-Math | +0.0 [−2.1, +2.1] | **+4.5** [+1.5, +7.6] |
+| Distilled − RL-Code | **+3.9** [+0.9, +7.1] | −1.0 [−2.6, +0.4] |
+
+- **Each teacher wins its own domain.** RL-Math leads on AIME and RL-Code on
+  LiveCodeBench. An earlier one-sample run had RL-Code ahead on AIME24 (7/30 vs 6/30);
+  that was noise.
+- **The distilled student matches the better teacher in each domain:** tied with
+  RL-Math on AIME and within one point of RL-Code on LiveCodeBench. It improves on
+  MixSFT by about 7 points on both.
+- **Code RL also helps math.** RL-Code is +3.1 points [+0.2, +6.2] over MixSFT on
+  AIME. About 2 points of that comes from fewer truncated answers: MixSFT hits the
+  32,768-token limit on 15–20% of AIME answers, RL-Code on 6–9%.
+- **These numbers match the published model cards:** MixSFT 15.63 / 20.26 (AIME24 /
+  AIME25) and 15.99 (LCB v5); RL-Math 23.65 / 24.84; RL-Code 22.16 on LCB v5.
+
+During training the exact reverse KL to the teachers dropped from 0.014 (math) / 0.051
+(code), averaged over the first 10 steps, to 0.003 / 0.004 over the last 10. Most
+training rollouts still hit the 4,096-token limit at the end of training.
+
+Scoring checks:
+- AIME: no unparsed answer contained the correct number.
+- LiveCodeBench: re-run with a 24 s limit instead of 6 s, only 13 of the 340
+  time-limit failures in RL-Code and RL-Math pass. The distilled student writes
+  unfenced code in 87 of its 2,672 answers; scoring those as code would add 0.4 points.
