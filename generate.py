@@ -16,6 +16,7 @@ def main():
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--tensor-parallel-size", type=int, default=1)
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.9)
+    parser.add_argument("--dtype", default="bfloat16", choices=["bfloat16", "float16", "float32"])
     parser.add_argument("--max-model-len", type=int, default=None)
     parser.add_argument("--limit", type=int, default=0, help="Problems per benchmark; 0 means all")
     parser.add_argument("--samples", type=int, default=1)
@@ -33,7 +34,7 @@ def main():
     from vllm import LLM, SamplingParams
 
     engine = LLM(
-        model=args.model, dtype="bfloat16", seed=args.seed,
+        model=args.model, dtype=args.dtype, seed=args.seed,
         tensor_parallel_size=args.tensor_parallel_size,
         gpu_memory_utilization=args.gpu_memory_utilization,
         max_model_len=args.max_model_len, generation_config="vllm",

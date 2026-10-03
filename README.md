@@ -258,3 +258,80 @@ Scoring checks:
 - LiveCodeBench: re-run with a 24 s limit instead of 6 s, only 13 of the 340
   time-limit failures in RL-Code and RL-Math pass. The distilled student writes
   unfenced code in 87 of its 2,672 answers; scoring those as code would add 0.4 points.
+
+## Task arithmetic
+
+`task_arithmetic.py` merges the two teachers without training, following Ilharco et
+al., "Editing Models with Task Arithmetic" (ICLR 2023). Each teacher was fine-tuned from
+MixSFT, so its task vector is τ = θ_teacher − θ_MixSFT, and the merged model is
+θ_MixSFT + λ (τ_math + τ_code) with one λ for both vectors:
+
+```bash
+python task_arithmetic.py --lam 0.75 --dtype float16 --output outputs_task_arithmetic/lambda_0.75_fp16/model
+python generate.py --model outputs_task_arithmetic/lambda_0.75_fp16/model \
+    --output outputs_task_arithmetic/lambda_0.75_fp16/eval --dtype float16 --samples 16
+python score.py --input outputs_task_arithmetic/lambda_0.75_fp16/eval
+```
+
+Use `--dtype float16` in both commands; it is essential for any λ other than 1. RL changes the weights
+very little: 74–81% of the teachers' weights are identical to MixSFT in BF16, and most
+of the rest differ by one BF16 step. Scaling such a step by 0.5 lands exactly between two
+BF16 values, so a BF16 merge loses 30%, 76% and 89% of the update for λ = 0.75, 0.5 and
+0.25. FP16 has 3 more significand bits and stores these merges essentially exactly.
+`generate.py --dtype` sets the precision vLLM serves the model in (default `bfloat16`).
+
+### Results
+
+Same protocol as above (16 samples, seed 42, 32,768 tokens); scores in %, 95% bootstrap
+intervals over problems.
+
+| Model | AIME24 | LCB v5 | LCB answers ending in gibberish |
+|---|---:|---:|---:|
+| On-policy distillation | 24.6 [13.5, 36.9] | 22.5 [17.3, 27.8] | 0.0% |
+| Task arithmetic, λ = 0.25 (FP16) | 19.8 [10.8, 30.0] | 20.4 [15.6, 25.3] | 0.0% |
+| Task arithmetic, λ = 0.5 (FP16) | 24.8 [14.0, 36.5] | 22.8 [17.8, 27.9] | 0.0% |
+| **Task arithmetic, λ = 0.75 (FP16)** | **27.5** [15.8, 40.2] | **24.4** [19.0, 29.9] | 2.4% |
+| Task arithmetic, λ = 1 (FP16) | 25.2 [13.3, 38.5] | 23.2 [17.9, 28.6] | 16.1% |
+| Task arithmetic, λ = 1 (BF16) | 22.3 [11.2, 34.6] | 23.7 [18.4, 29.3] | 17.9% |
+
+Task arithmetic minus on-policy distillation, paired by problem (bold: the interval
+excludes zero):
+
+| λ | AIME24 | LCB v5 |
+|---|---:|---:|
+| 0.25 | **−4.8** [−9.0, −1.0] | −2.1 [−5.1, +0.8] |
+| 0.5 | +0.2 [−2.7, +3.1] | +0.3 [−1.7, +2.2] |
+| 0.75 | **+2.9** [+0.2, +5.6] | **+2.0** [+0.3, +3.7] |
+| 1 (FP16) | +0.6 [−1.7, +2.9] | +0.7 [−0.9, +2.2] |
+
+- **Tuned task arithmetic is at least as good as on-policy distillation here**, with no
+  training. λ = 0.75 is ahead on both benchmarks and also beats RL-Math on AIME24
+  (+4.0 [+0.8, +7.3]) while matching RL-Code on LiveCodeBench (+0.9 [−0.7, +2.6]).
+- **λ was chosen on the test benchmarks**, as the best of four values; the paper selects
+  it on held-out validation sets. λ = 0.75's lead only just excludes zero, so treat it
+  as an upper estimate. The Open-MOPD paper reports the opposite ordering in its own
+  setup (three teachers including instruction following, full-length distillation).
+- **λ = 1 is unstable at temperature 1.0**: 16–18% of its LiveCodeBench answers
+  degenerate into gibberish (`?#?#?#…`) until the token limit. At temperature 0.6
+  (AIME) this almost never happens.
+- **BF16 rounding costs accuracy even at λ = 1**, where it loses only 3% of the update:
+  FP16 − BF16 is +2.9 [+0.6, +5.4] on AIME24 (−0.6 [−1.5, +0.4] on LiveCodeBench).
+
+### Why task arithmetic loops less on AIME
+
+A follow-up analysis on AIME24 + AIME25 (60 problems, 16 samples) traced task
+arithmetic's AIME advantage over RL-Math largely to fewer answers that get stuck
+repeating text until the token limit:
+
+- RL-Math repeats calculation steps on 7.4% of answers (`Let me note that this product
+  is equal to ∏ … Let me note that this product is equal to ∏ …`); λ = 0.75 does on
+  3.1% (difference −4.3 [−6.4, −2.3]).
+- The code task vector is responsible: merges with only the math vector at 0.75 loop as
+  much as RL-Math, adding the code vector removes the loops (−5.4 [−8.0, −2.9]), and
+  serving RL-Math in FP16 instead of BF16 changes nothing. The code vector gives shorter
+  answers and a lower chance of entering a loop, partly by making the model close
+  `</think>` and commit to an answer.
+- At λ = 1 a different loop appears — the model keeps trying to conclude but never
+  commits (`But the answer is 0. But I'm not sure.`): 6.9% of answers vs 1.8% at
+  λ = 0.75. Neither vector alone produces it at the same distance from MixSFT, so it
+  comes from combining them at full strength. This is why λ = 1 does worse than 0.75.
